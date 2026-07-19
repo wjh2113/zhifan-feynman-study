@@ -81,9 +81,13 @@ async function createDatabase() {
       byte_size BIGINT NOT NULL DEFAULT 0,
       page_count INTEGER NOT NULL DEFAULT 0,
       chunk_count INTEGER NOT NULL DEFAULT 0,
+      summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+      parse_report JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await db.query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS summary JSONB NOT NULL DEFAULT '{}'::jsonb");
+  await db.query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS parse_report JSONB NOT NULL DEFAULT '{}'::jsonb");
   await db.query(`
     CREATE TABLE IF NOT EXISTS document_chunks (
       id TEXT PRIMARY KEY,
@@ -195,8 +199,8 @@ export async function saveDocument({ projectId, source, file, chunks, embeddings
   await db.query(
     `INSERT INTO documents(
        id, project_id, filename, stored_name, storage_path, mime_type,
-       file_type, byte_size, page_count, chunk_count
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+       file_type, byte_size, page_count, chunk_count, summary, parse_report
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb)`,
     [
       documentId,
       projectId,
@@ -207,7 +211,9 @@ export async function saveDocument({ projectId, source, file, chunks, embeddings
       source.type,
       file.size || file.buffer.length,
       source.pages.length,
-      chunks.length
+      chunks.length,
+      JSON.stringify(source.summary || {}),
+      JSON.stringify(source.parseReport || {})
     ]
   );
 
@@ -240,8 +246,22 @@ export async function saveDocument({ projectId, source, file, chunks, embeddings
     chunks: chunks.length,
     size: Number(file.size || file.buffer.length),
     status: "ready",
-    downloadUrl: `/api/documents/${documentId}/file`
+    downloadUrl: `/api/documents/${documentId}/file`,
+    summary: source.summary || {},
+    parseReport: source.parseReport || {},
+    parsedPreview: source.parsedPreview || ""
   };
+}
+
+export async function updateDocumentInsights(documentId, summary, parseReport) {
+  const db = await getDatabase();
+  await db.query(
+    `UPDATE documents
+        SET summary = $2::jsonb,
+            parse_report = $3::jsonb
+      WHERE id = $1`,
+    [documentId, JSON.stringify(summary || {}), JSON.stringify(parseReport || {})]
+  );
 }
 
 export async function getDocument(documentId) {

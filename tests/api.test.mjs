@@ -1,14 +1,59 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { after, before, test } from "node:test";
+import JSZip from "jszip";
 
 const port = 20_000 + Math.floor(Math.random() * 10_000);
 const baseUrl = `http://127.0.0.1:${port}`;
 const ragProjectId = `rag-test-${port}`;
 let server;
+let visionMock;
+let visionMockUrl;
 let serverError = "";
 let uploadedSources = [];
+
+function createBlankPdf() {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 160] /Resources << >> /Contents 4 0 R >>",
+    "<< /Length 3 >>\nstream\nq\nQ\nendstream"
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf, "ascii"));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf, "ascii");
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(pdf, "ascii");
+}
+
+async function createDocxWithScreenshot(png) {
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8"?>
+    <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+      <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+      <Default Extension="xml" ContentType="application/xml"/>
+      <Default Extension="png" ContentType="image/png"/>
+      <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+    </Types>`);
+  zip.folder("_rels").file(".rels", `<?xml version="1.0" encoding="UTF-8"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+    </Relationships>`);
+  zip.folder("word").file("document.xml", `<?xml version="1.0" encoding="UTF-8"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:body><w:p><w:r><w:t>课堂正文：以下截图记录访谈结论。</w:t></w:r></w:p><w:sectPr/></w:body>
+    </w:document>`);
+  zip.folder("word").folder("media").file("screenshot.png", png);
+  return zip.generateAsync({ type: "nodebuffer" });
+}
 
 async function waitForServer() {
   const deadline = Date.now() + 180_000;
@@ -28,6 +73,24 @@ async function waitForServer() {
 }
 
 before(async () => {
+  visionMock = createServer(async (request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    if (request.url === "/models") {
+      response.end(JSON.stringify({ data: [{ id: "mock-vision" }] }));
+      return;
+    }
+    if (request.url === "/chat/completions") {
+      response.end(JSON.stringify({
+        choices: [{ message: { content: "截图标题：用户访谈结论。关键发现：先验证最危险的假设。" } }]
+      }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  await new Promise((resolve) => visionMock.listen(0, "127.0.0.1", resolve));
+  visionMockUrl = `http://127.0.0.1:${visionMock.address().port}`;
+
   server = spawn(process.execPath, ["server.mjs"], {
     cwd: process.cwd(),
     env: {
@@ -48,6 +111,7 @@ before(async () => {
 
 after(async () => {
   if (server && !server.killed) server.kill();
+  if (visionMock) await new Promise((resolve) => visionMock.close(resolve));
   await rm(`.data-test-${port}`, { recursive: true, force: true });
 });
 
@@ -127,6 +191,9 @@ test("TXT 与 Markdown 资料可上传并生成知识骨架", async () => {
   uploadedSources = data.sources;
   assert.equal(data.sources[0].name, "课堂笔记.txt");
   assert.ok(data.sources[0].chunks >= 1);
+  assert.match(data.sources[0].summary.summary, /反馈闭环|用户修改/);
+  assert.match(data.sources[0].parsedPreview, /反馈闭环/);
+  assert.equal(data.sources[0].parseReport.nativeCharacters > 0, true);
   assert.match(data.sources[0].downloadUrl, /\/api\/documents\//);
   assert.ok(data.retrieval.chunks >= 2);
   assert.ok(data.modules.length >= 3);
@@ -134,6 +201,84 @@ test("TXT 与 Markdown 资料可上传并生成知识骨架", async () => {
   assert.ok(data.questions.length >= 5);
   assert.match(data.questions[0].question, /解释|例子|什么情况下|如何|比较/);
   assert.ok(data.questions[0].concept);
+});
+
+test("图片资料会调用视觉模型 OCR，并把识别结果写入总结和检索分块", async () => {
+  const savedVision = await fetch(`${baseUrl}/api/settings/vision`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      baseUrl: visionMockUrl,
+      model: "mock-vision",
+      apiKey: "vision-test-secret"
+    })
+  });
+  assert.equal(savedVision.status, 200);
+  const publicConfig = await savedVision.json();
+  assert.equal(publicConfig.configured, true);
+  assert.equal(JSON.stringify(publicConfig).includes("vision-test-secret"), false);
+
+  const connection = await fetch(`${baseUrl}/api/settings/vision/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({})
+  });
+  assert.equal(connection.status, 200);
+  assert.equal((await connection.json()).modelAvailable, true);
+
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9WlS8AAAAASUVORK5CYII=",
+    "base64"
+  );
+  const body = new FormData();
+  body.append("files", new Blob([png], { type: "image/png" }), "课堂截图.png");
+  body.append("title", "截图 OCR 测试");
+  body.append("projectId", `ocr-test-${port}`);
+  const response = await fetch(`${baseUrl}/api/analyze`, { method: "POST", body });
+  assert.equal(response.status, 200, await response.clone().text());
+  const data = await response.json();
+  assert.equal(data.sources.length, 1);
+  assert.equal(data.sources[0].parseReport.ocrStatus, "ready");
+  assert.equal(data.sources[0].parseReport.imagesOcrd, 1);
+  assert.match(data.sources[0].parsedPreview, /用户访谈结论/);
+  assert.match(data.sources[0].summary.summary, /用户访谈结论/);
+  assert.ok(data.sources[0].chunks >= 1);
+
+  const pdfBody = new FormData();
+  pdfBody.append("files", new Blob([createBlankPdf()], { type: "application/pdf" }), "扫描讲义.pdf");
+  pdfBody.append("title", "PDF OCR 测试");
+  pdfBody.append("projectId", `pdf-ocr-test-${port}`);
+  const pdfResponse = await fetch(`${baseUrl}/api/analyze`, { method: "POST", body: pdfBody });
+  assert.equal(pdfResponse.status, 200, await pdfResponse.clone().text());
+  const pdfData = await pdfResponse.json();
+  assert.equal(pdfData.sources[0].parseReport.ocrStatus, "ready");
+  assert.equal(pdfData.sources[0].parseReport.imagesOcrd, 1);
+  assert.match(pdfData.sources[0].parsedPreview, /最危险的假设/);
+
+  const docxBody = new FormData();
+  docxBody.append(
+    "files",
+    new Blob([await createDocxWithScreenshot(png)], {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }),
+    "含截图课堂笔记.docx"
+  );
+  docxBody.append("title", "DOCX 截图 OCR 测试");
+  docxBody.append("projectId", `docx-ocr-test-${port}`);
+  const docxResponse = await fetch(`${baseUrl}/api/analyze`, { method: "POST", body: docxBody });
+  assert.equal(docxResponse.status, 200, await docxResponse.clone().text());
+  const docxData = await docxResponse.json();
+  assert.equal(docxData.sources[0].parseReport.imagesFound, 1);
+  assert.equal(docxData.sources[0].parseReport.imagesOcrd, 1);
+  assert.match(docxData.sources[0].parsedPreview, /课堂正文/);
+  assert.match(docxData.sources[0].parsedPreview, /用户访谈结论/);
+
+  const cleared = await fetch(`${baseUrl}/api/settings/vision`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clearApiKey: true })
+  });
+  assert.equal(cleared.status, 200);
 });
 
 test("原始资料会落盘并可通过受控接口重新下载", async () => {

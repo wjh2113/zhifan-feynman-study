@@ -139,9 +139,24 @@ const demoProject = {
       }
     ],
     sources: [
-      { id: "src1", name: "AI产品方法论课件.pdf", type: "课件 · PDF", pages: 38, status: "ready", size: "4.8 MB" },
-      { id: "src2", name: "课堂录音转写.docx", type: "转写 · DOCX", pages: 1, status: "ready", size: "186 KB" },
-      { id: "src3", name: "个人学习笔记.md", type: "笔记 · MD", pages: 1, status: "ready", size: "24 KB" }
+      {
+        id: "src1", name: "AI产品方法论课件.pdf", type: "课件 · PDF", pages: 38, status: "ready", size: "4.8 MB",
+        summary: { summary: "课件从模型能力边界、AI-Native 产品设计和数据反馈三个层面说明 AI 产品的核心方法。", keyPoints: ["先定义用户任务，再决定是否使用 AI", "把模型不确定性设计进产品体验", "让反馈数据真正进入模型与产品迭代"] },
+        parseReport: { nativeCharacters: 12680, ocrCharacters: 842, imagesFound: 6, imagesOcrd: 6, ocrStatus: "ready", warnings: [] },
+        parsedPreview: "第 1 页：AI 产品不是给旧功能加上聊天框，而是从模型能够完成的任务出发重构用户体验。\n\n第 12 页：从模型能力出发，重构用户任务链路。"
+      },
+      {
+        id: "src2", name: "课堂录音转写.docx", type: "转写 · DOCX", pages: 1, status: "ready", size: "186 KB",
+        summary: { summary: "转写补充了课件没有展开的上线踩坑、人工兜底和反馈信号质量判断。", keyPoints: ["高风险回答必须设置人工介入条件", "点赞点踩不等于可训练的高质量反馈", "先验证最危险的产品假设"] },
+        parseReport: { nativeCharacters: 28410, ocrCharacters: 0, imagesFound: 0, imagesOcrd: 0, ocrStatus: "not_needed", warnings: [] },
+        parsedPreview: "第 1 页：不要掩盖模型的不确定性，要设计处理不确定性的体验。上线前先明确错误成本和人工介入阈值。"
+      },
+      {
+        id: "src3", name: "个人学习笔记.md", type: "笔记 · MD", pages: 1, status: "ready", size: "24 KB",
+        summary: { summary: "个人笔记把课程内容整理为任务定义、最小验证和反馈闭环三个行动步骤。", keyPoints: ["问题定义优先于功能设计", "用最低成本验证关键假设", "每次使用都应产生可学习信号"] },
+        parseReport: { nativeCharacters: 1860, ocrCharacters: 0, imagesFound: 0, imagesOcrd: 0, ocrStatus: "not_needed", warnings: [] },
+        parsedPreview: "第 1 页：先验证最危险的假设，再增加投入。产品进展应以关键不确定性是否减少来判断。"
+      }
     ]
   },
   blindspots: [
@@ -201,11 +216,25 @@ function questionsForProject(project) {
   }));
 }
 
+function withCurrentDemoContent(project) {
+  if (project?.id !== demoProject.id) return project;
+  const demoSources = new Map(demoProject.analysis.sources.map((source) => [source.name, source]));
+  return {
+    ...project,
+    analysis: {
+      ...project.analysis,
+      sources: (project.analysis?.sources || []).map((source) =>
+        source.summary ? source : { ...source, ...demoSources.get(source.name) }
+      )
+    }
+  };
+}
+
 function App() {
   const [projects, setProjects] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("zhifan-projects"));
-      return saved?.length ? saved : [demoProject];
+      return saved?.length ? saved.map(withCurrentDemoContent) : [demoProject];
     } catch {
       return [demoProject];
     }
@@ -235,7 +264,7 @@ function App() {
         if (!response.ok) throw new Error(data.error || "无法读取持久化项目");
         if (cancelled) return;
         if (data.projects?.length) {
-          setProjects(data.projects);
+          setProjects(data.projects.map(withCurrentDemoContent));
           setActiveProjectId((current) =>
             data.projects.some((item) => item.id === current) ? current : data.projects[0].id
           );
@@ -502,13 +531,14 @@ function Overview({ project, navigate }) {
 function Sources({ project, updateProject, navigate, showToast }) {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [openSource, setOpenSource] = useState(null);
   const fileInput = useRef();
   const sources = project.analysis?.sources || [];
 
   const addFiles = (list) => {
-    const accepted = Array.from(list).filter((file) => /\.(pdf|docx|txt|md|markdown)$/i.test(file.name));
+    const accepted = Array.from(list).filter((file) => /\.(pdf|docx|txt|md|markdown|png|jpe?g|webp)$/i.test(file.name));
     setFiles((current) => [...current, ...accepted].slice(0, 12));
-    if (accepted.length !== list.length) showToast("首版支持 PDF、DOCX、TXT 和 Markdown");
+    if (accepted.length !== list.length) showToast("支持 PDF、DOCX、TXT、Markdown、PNG、JPG 和 WebP");
   };
 
   const analyze = async () => {
@@ -535,7 +565,8 @@ function Sources({ project, updateProject, navigate, showToast }) {
         sessions: []
       });
       showToast(data.demo ? "知识骨架已生成（当前为演示模式）" : "DeepSeek 已完成资料分析");
-      navigate("map");
+      setFiles([]);
+      setOpenSource(data.sources?.[0]?.id || null);
     } catch (error) {
       showToast(error.message);
     } finally {
@@ -548,7 +579,7 @@ function Sources({ project, updateProject, navigate, showToast }) {
       <PageHeading
         eyebrow="第一步 · 构建专属语料库"
         title="学习资料"
-        description="把课件、笔记和课堂转写放在一起，AI 会交叉提炼知识骨架与隐性经验。"
+        description="解析完成后先核对每份资料的总结、关键点和原文预览，再进入知识地图。"
         action={<button className="primary-btn" onClick={analyze} disabled={loading}>{loading ? <Spinner /> : <Sparkles size={17} />}{loading ? "正在提炼…" : files.length ? `分析 ${files.length} 份新资料` : "查看知识地图"}</button>}
       />
 
@@ -558,11 +589,11 @@ function Sources({ project, updateProject, navigate, showToast }) {
         onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}
         onClick={() => fileInput.current?.click()}
       >
-        <input ref={fileInput} type="file" multiple accept=".pdf,.docx,.txt,.md,.markdown" onChange={(event) => addFiles(event.target.files)} />
+        <input ref={fileInput} type="file" multiple accept=".pdf,.docx,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp" onChange={(event) => addFiles(event.target.files)} />
         <div className="upload-icon"><UploadCloud size={28} /></div>
         <h3>拖入学习资料，或点击选择文件</h3>
-        <p>支持 PDF、DOCX、TXT、Markdown · 单个文件不超过 30 MB</p>
-        <div className="upload-hint"><Zap size={14} /> 课件与转写一起上传，才能发现讲师没有写下来的经验</div>
+        <p>支持 PDF、DOCX、TXT、Markdown、PNG、JPG、WebP · 单个文件不超过 30 MB</p>
+        <div className="upload-hint"><Zap size={14} /> PDF 扫描页、文档截图和单独图片会进入 OCR 识别流程</div>
       </div>
 
       {files.length > 0 && (
@@ -584,16 +615,54 @@ function Sources({ project, updateProject, navigate, showToast }) {
           <div><span className="section-kicker">已入库</span><h3>{sources.length} 份资料</h3></div>
           <button className="filter-btn">全部类型 <ChevronDown size={14} /></button>
         </div>
-        {sources.map((source) => (
-          <div className="file-row" key={source.id}>
-            <FileTypeIcon name={source.name} />
-            <div className="file-copy"><strong>{source.name}</strong><span>{source.type} · {source.pages || 1} 页 {source.chunks ? `· ${source.chunks} 个检索分块` : ""} {source.size ? `· ${typeof source.size === "number" ? formatSize(source.size) : source.size}` : ""}</span></div>
-            <span className="ready-tag"><Check size={13} /> 已解析</span>
-            {source.downloadUrl ? (
-              <a className="icon-btn" href={source.downloadUrl} title="下载原始资料"><Download size={17} /></a>
-            ) : <button className="icon-btn"><MoreHorizontal size={18} /></button>}
-          </div>
-        ))}
+        {sources.map((source) => {
+          const expanded = openSource === source.id;
+          const report = source.parseReport || {};
+          const ocrLabel =
+            report.ocrStatus === "ready" ? `OCR ${report.imagesOcrd || 0} 张`
+              : report.ocrStatus === "not_configured" ? "OCR 待配置"
+                : report.ocrStatus === "partial" ? "OCR 部分完成" : "无需 OCR";
+          return (
+            <div className={`source-item ${expanded ? "expanded" : ""}`} key={source.id}>
+              <div className="file-row">
+                <FileTypeIcon name={source.name} />
+                <div className="file-copy"><strong>{source.name}</strong><span>{source.type} · {source.pages || 1} 页 {source.chunks ? `· ${source.chunks} 个检索分块` : ""} · {ocrLabel}</span></div>
+                <button className="parse-toggle" onClick={() => setOpenSource(expanded ? null : source.id)}>
+                  {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                  {expanded ? "收起解析" : "查看解析"}
+                </button>
+                {source.downloadUrl ? (
+                  <a className="icon-btn" href={source.downloadUrl} title="下载原始资料"><Download size={17} /></a>
+                ) : <button className="icon-btn"><MoreHorizontal size={18} /></button>}
+              </div>
+              {expanded && (
+                <div className="parse-detail">
+                  <div className="parse-summary">
+                    <span className="section-kicker">本资料总结</span>
+                    <h3>{source.summary?.summary || "尚未生成总结"}</h3>
+                    {!!source.summary?.keyPoints?.length && (
+                      <ul>{source.summary.keyPoints.map((point, index) => <li key={index}>{point}</li>)}</ul>
+                    )}
+                    <p className="verification-note">{source.summary?.verificationNote}</p>
+                  </div>
+                  <div className="parse-stats">
+                    <span>原生文本 <b>{report.nativeCharacters || 0}</b> 字</span>
+                    <span>OCR 文本 <b>{report.ocrCharacters || 0}</b> 字</span>
+                    <span>检测图片 <b>{report.imagesFound || 0}</b> 张</span>
+                    <span>已 OCR <b>{report.imagesOcrd || 0}</b> 张</span>
+                  </div>
+                  {!!report.warnings?.length && (
+                    <div className="parse-warning"><CircleAlert size={15} /><div>{report.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div></div>
+                  )}
+                  <div className="parsed-preview">
+                    <span className="section-kicker">解析原文预览（用于核对）</span>
+                    <pre>{source.parsedPreview || "没有提取到可预览的文字。"}</pre>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
         {!sources.length && <EmptyMini text="还没有已解析的资料。" />}
       </section>
     </>
@@ -1136,6 +1205,15 @@ function ModelSettingsPage({ showToast }) {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [visionForm, setVisionForm] = useState({
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4.1-mini",
+    apiKey: ""
+  });
+  const [visionSaved, setVisionSaved] = useState(null);
+  const [visionLoading, setVisionLoading] = useState(true);
+  const [visionBusy, setVisionBusy] = useState(false);
+  const [visionTest, setVisionTest] = useState(null);
 
   useEffect(() => {
     fetch("/api/settings/model")
@@ -1147,6 +1225,18 @@ function ModelSettingsPage({ showToast }) {
       })
       .catch((error) => showToast(error.message))
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/settings/vision")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "读取 OCR 配置失败");
+        setVisionSaved(data);
+        setVisionForm((current) => ({ ...current, baseUrl: data.baseUrl, model: data.model }));
+      })
+      .catch((error) => showToast(error.message))
+      .finally(() => setVisionLoading(false));
   }, []);
 
   const testConnection = async () => {
@@ -1213,15 +1303,61 @@ function ModelSettingsPage({ showToast }) {
     }
   };
 
+  const testVision = async () => {
+    setVisionBusy(true);
+    setVisionTest(null);
+    try {
+      const response = await fetch("/api/settings/vision/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(visionForm)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "连接测试失败");
+      setVisionTest({
+        ok: true,
+        message: data.modelAvailable === false
+          ? `接口已连接，但模型列表中没有 ${visionForm.model}`
+          : `接口已连接，${visionForm.model} 可用于 OCR`
+      });
+    } catch (error) {
+      setVisionTest({ ok: false, message: error.message });
+    } finally {
+      setVisionBusy(false);
+    }
+  };
+
+  const saveVision = async (clearApiKey = false) => {
+    setVisionBusy(true);
+    try {
+      const response = await fetch("/api/settings/vision", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...visionForm, clearApiKey })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "保存 OCR 配置失败");
+      setVisionSaved(data);
+      setVisionForm((current) => ({ ...current, apiKey: "" }));
+      if (clearApiKey) setVisionTest(null);
+      showToast(clearApiKey ? "已清除 OCR 视觉模型密钥" : "OCR 视觉模型配置已保存");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      setVisionBusy(false);
+    }
+  };
+
   return (
     <>
       <PageHeading
         eyebrow="应用设置 · 模型服务"
         title="模型设置"
-        description="配置后，资料解读、AI出题、费曼追问和学习成果将使用你的 DeepSeek 模型。"
+        description="DeepSeek 负责资料总结与学习；独立视觉模型负责 PDF 扫描页、文档截图和图片 OCR。"
       />
       <div className="settings-layout">
-        <section className="panel settings-form">
+        <div className="settings-main">
+          <section className="panel settings-form">
           <div className="settings-head">
             <div className="settings-provider"><Sparkles size={20} /><div><strong>DeepSeek</strong><span>OpenAI 兼容接口</span></div></div>
             <span className={`config-status ${saved?.configured ? "ready" : ""}`}>
@@ -1274,13 +1410,65 @@ function ModelSettingsPage({ showToast }) {
               {saving ? <Spinner /> : <Check size={16} />} 保存并启用
             </button>
           </div>
-        </section>
+          </section>
+
+          <section className="panel settings-form">
+            <div className="settings-head">
+              <div className="settings-provider"><FileText size={20} /><div><strong>OCR 视觉模型</strong><span>支持图片输入的 OpenAI 兼容接口</span></div></div>
+              <span className={`config-status ${visionSaved?.configured ? "ready" : ""}`}>
+                {visionSaved?.configured ? <><Check size={13} /> 已配置</> : <><CircleAlert size={13} /> 未配置</>}
+              </span>
+            </div>
+
+            {visionLoading ? <div className="settings-loading"><Spinner /> 正在读取 OCR 配置…</div> : (
+              <div className="settings-fields">
+                <label>
+                  <span>API 地址</span>
+                  <input value={visionForm.baseUrl} onChange={(event) => setVisionForm({ ...visionForm, baseUrl: event.target.value })} placeholder="https://api.openai.com/v1" />
+                  <small>可填写任何支持图片输入及 OpenAI Chat Completions 格式的服务。</small>
+                </label>
+                <label>
+                  <span>视觉模型名称</span>
+                  <input value={visionForm.model} onChange={(event) => setVisionForm({ ...visionForm, model: event.target.value })} placeholder="gpt-4.1-mini" />
+                  <small>必须选择支持 image_url 图片输入的模型；DeepSeek 文本模型不能直接 OCR。</small>
+                </label>
+                <label>
+                  <span>API Key</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={visionForm.apiKey}
+                    onChange={(event) => setVisionForm({ ...visionForm, apiKey: event.target.value })}
+                    placeholder={visionSaved?.configured ? `已保存：${visionSaved.apiKeyMasked}` : "输入视觉模型 API Key"}
+                  />
+                  <small>{visionSaved?.configured ? "留空会继续使用已保存的密钥。" : "未配置时仍会提取普通文本，但会明确标记截图尚未 OCR。"}</small>
+                </label>
+              </div>
+            )}
+
+            {visionTest && (
+              <div className={`connection-result ${visionTest.ok ? "success" : "error"}`}>
+                {visionTest.ok ? <Check size={16} /> : <CircleAlert size={16} />}
+                <span>{visionTest.message}</span>
+              </div>
+            )}
+            <div className="settings-actions">
+              {visionSaved?.configured && <button className="text-btn danger-text" onClick={() => saveVision(true)} disabled={visionBusy}>清除密钥</button>}
+              <button className="secondary-btn" onClick={testVision} disabled={visionBusy || visionLoading}>
+                {visionBusy ? <Spinner /> : <Zap size={16} />} 测试连接
+              </button>
+              <button className="primary-btn" onClick={() => saveVision(false)} disabled={visionBusy || visionLoading || (!visionForm.apiKey && !visionSaved?.configured)}>
+                {visionBusy ? <Spinner /> : <Check size={16} />} 保存 OCR 配置
+              </button>
+            </div>
+          </section>
+        </div>
 
         <aside className="settings-aside">
           <div className="concept-note">
             <span className="section-kicker">配置后会发生什么</span>
-            <h3>问题真正来自你的资料</h3>
-            <p>上传资料后，DeepSeek会提炼概念并生成5–8个费曼问题，每道题都关联原始文件、页码和出题依据。</p>
+            <h3>先核对解析，再开始学习</h3>
+            <p>每份资料会展示独立总结、关键点、解析原文预览和 OCR 统计，确认内容正确后再进入知识地图。</p>
           </div>
           <div className="concept-note">
             <span className="section-kicker">隐私说明</span>

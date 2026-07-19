@@ -1,8 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import multer from "multer";
-import mammoth from "mammoth";
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -13,9 +11,13 @@ import { embedTexts, embeddingStatus } from "./server/embedding.mjs";
 import {
   getModelConfig,
   getPublicModelConfig,
+  getPublicVisionConfig,
   testModelConfig,
-  updateModelConfig
+  testVisionConfig,
+  updateModelConfig,
+  updateVisionConfig
 } from "./server/model-config.mjs";
+import { parseFile } from "./server/document-parser.mjs";
 import {
   databaseStatus,
   deleteProject,
@@ -26,7 +28,8 @@ import {
   listProjects,
   recordEvent,
   saveDocument,
-  saveProject
+  saveProject,
+  updateDocumentInsights
 } from "./server/storage.mjs";
 
 const app = express();
@@ -67,45 +70,6 @@ async function deepseek(messages, temperature = 0.35) {
   return cleanJson(data.choices?.[0]?.message?.content || "{}");
 }
 
-async function parsePdf(buffer, filename) {
-  const pdf = await getDocument({ data: new Uint8Array(buffer) }).promise;
-  const pages = [];
-  for (let index = 1; index <= pdf.numPages; index += 1) {
-    const page = await pdf.getPage(index);
-    const content = await page.getTextContent();
-    const text = content.items.map((item) => item.str).join(" ").replace(/\s+/g, " ").trim();
-    if (text) pages.push({ page: index, text });
-  }
-  return { filename, type: "PDF", pages };
-}
-
-function decodeUploadName(filename) {
-  const decoded = Buffer.from(filename, "latin1").toString("utf8");
-  return decoded.includes("\uFFFD") ? filename : decoded;
-}
-
-async function parseFile(file) {
-  const filename = decodeUploadName(file.originalname);
-  const ext = path.extname(filename).toLowerCase();
-  if (ext === ".pdf") return parsePdf(file.buffer, filename);
-  if (ext === ".docx") {
-    const result = await mammoth.extractRawText({ buffer: file.buffer });
-    return {
-      filename,
-      type: "DOCX",
-      pages: [{ page: 1, text: result.value.replace(/\s+/g, " ").trim() }]
-    };
-  }
-  if ([".txt", ".md", ".markdown"].includes(ext)) {
-    return {
-      filename,
-      type: ext.slice(1).toUpperCase(),
-      pages: [{ page: 1, text: file.buffer.toString("utf8").replace(/\s+/g, " ").trim() }]
-    };
-  }
-  throw new Error(`暂不支持 ${ext || "该"} 文件格式`);
-}
-
 function corpusFrom(sources) {
   return sources
     .flatMap((source) =>
@@ -116,6 +80,55 @@ function corpusFrom(sources) {
     )
     .join("\n\n")
     .slice(0, 650000);
+}
+
+function extractSentences(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .split(/(?<=[。！？.!?])\s*/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 12);
+}
+
+function buildSourceSummary(source) {
+  const fullText = source.pages.map((page) => page.text).filter(Boolean).join("\n");
+  const sentences = extractSentences(fullText);
+  const keyPoints = sentences.slice(1, 4).map((sentence) => sentence.slice(0, 180));
+  const report = source.parseReport || {};
+  const noText = !fullText.trim();
+  return {
+    summary: noText
+      ? report.ocrStatus === "not_configured"
+        ? "检测到图片内容，配置 OCR 视觉模型后才能生成资料总结。"
+        : "本资料没有提取到可读文字，请查看解析状态和原始文件。"
+      : (sentences[0] || fullText).slice(0, 260),
+    keyPoints: keyPoints.length ? keyPoints : noText ? [] : [fullText.slice(0, 180)],
+    confidence: noText ? "low" : report.warnings?.length ? "medium" : "high"
+  };
+}
+
+function normalizeDocumentSummaries(input, sources) {
+  const entries = Array.isArray(input) ? input : [];
+  return sources.map((source) => {
+    const matched = entries.find(
+      (item) => String(item.filename || item.name).trim() === source.filename
+    );
+    const fallback = source.summary || buildSourceSummary(source);
+    return {
+      filename: source.filename,
+      summary: String(matched?.summary || fallback.summary).trim(),
+      keyPoints: (matched?.keyPoints?.length ? matched.keyPoints : fallback.keyPoints)
+        .map((item) => String(item).trim())
+        .filter(Boolean)
+        .slice(0, 5),
+      confidence: matched?.confidence || fallback.confidence,
+      verificationNote:
+        matched?.verificationNote ||
+        (source.parseReport?.warnings?.length
+          ? "解析存在提示，请结合下方原文预览和原始文件核对。"
+          : "已从解析文本生成，可结合原文预览抽查。")
+    };
+  });
 }
 
 function demoAnalysis(title, mode, sources) {
@@ -316,6 +329,30 @@ app.post("/api/settings/model/test", async (req, res) => {
   }
 });
 
+app.get("/api/settings/vision", async (_req, res) => {
+  try {
+    res.json(await getPublicVisionConfig());
+  } catch (error) {
+    res.status(500).json({ error: error.message || "读取 OCR 视觉模型配置失败" });
+  }
+});
+
+app.put("/api/settings/vision", async (req, res) => {
+  try {
+    res.json(await updateVisionConfig(req.body || {}));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "保存 OCR 视觉模型配置失败" });
+  }
+});
+
+app.post("/api/settings/vision/test", async (req, res) => {
+  try {
+    res.json(await testVisionConfig(req.body || {}));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "OCR 视觉模型连接测试失败" });
+  }
+});
+
 app.get("/api/projects", async (_req, res) => {
   try {
     res.json({ projects: await listProjects() });
@@ -351,6 +388,11 @@ app.post("/api/analyze", upload.array("files", 12), async (req, res) => {
     for (const file of files) {
       const source = await parseFile(file);
       source.documentKey = randomUUID();
+      source.summary = buildSourceSummary(source);
+      source.parsedPreview = source.pages
+        .map((page) => `第 ${page.page} 页：${page.text}`)
+        .join("\n\n")
+        .slice(0, 1600);
       sources.push(source);
     }
     const title = req.body.title || "新的学习项目";
@@ -422,21 +464,38 @@ app.post("/api/analyze", upload.array("files", 12), async (req, res) => {
  }],
  "tacitKnowledge":[{"title":"","type":"实战经验|案例|踩坑|反直觉观点","detail":"",
    "sourceRef":{"file":"原文件名","page":1}}],
+ "documentSummaries":[{"filename":"必须是原文件名","summary":"忠实概括本文件，不与其他文件混写","keyPoints":["本文件关键点"],"confidence":"high|medium|low","verificationNote":"解析核对提示"}],
  "scenarios":[{"id":"s1","title":"","context":"","constraint":"","goal":"","concepts":[""]}],
  "questions":[{"id":"q1","question":"基于资料、能检验真实理解的完整问题","conceptId":"c1","concept":"对应概念","why":"考察意图",
    "sourceRefs":[{"file":"原文件名","page":1,"quote":"出题依据"}]}]
 }
-要求：3-5个模块，每模块1-4个概念；5个左右核心概念；3条高价值知识；课程模式重点交叉对比课件与转写；生成2个真实场景题；再生成5-8个费曼问题，覆盖通俗解释、举例、边界、比较和真实应用，问题必须来自资料而不是通用题库。若资料没有依据，明确写“资料未覆盖”，不要虚构引用。
+要求：为每个原文件单独生成一份 documentSummaries，不能把不同文件的内容混成一份；3-5个模块，每模块1-4个概念；5个左右核心概念；3条高价值知识；课程模式重点交叉对比课件与转写；生成2个真实场景题；再生成5-8个费曼问题，覆盖通俗解释、举例、边界、比较和真实应用，问题必须来自资料而不是通用题库。若资料没有依据，明确写“资料未覆盖”，不要虚构引用。
 
 资料如下：
 ${corpus}`
         }
       ]);
     }
+    const documentSummaries = normalizeDocumentSummaries(result.documentSummaries, sources);
+    const enrichedSources = storedSources.map((stored, index) => {
+      const summary = documentSummaries[index];
+      return {
+        ...stored,
+        summary,
+        parseReport: sources[index].parseReport,
+        parsedPreview: sources[index].parsedPreview
+      };
+    });
+    await Promise.all(
+      enrichedSources.map((source) =>
+        updateDocumentInsights(source.id, source.summary, source.parseReport)
+      )
+    );
     const mergedAnalysis = {
       ...demo,
       ...result,
-      sources: storedSources,
+      documentSummaries,
+      sources: enrichedSources,
       projectId,
       retrieval: {
         chunks: allChunks.length,
@@ -463,7 +522,7 @@ ${corpus}`
       onePager: existingProject?.onePager || null
     });
     await recordEvent(projectId, "documents_indexed", {
-      documents: storedSources.map(({ id, name, chunks }) => ({ id, name, chunks })),
+      documents: enrichedSources.map(({ id, name, chunks }) => ({ id, name, chunks })),
       chunks: allChunks.length
     });
     res.json(analysis);

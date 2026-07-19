@@ -2,17 +2,26 @@ import { getAppSetting, saveAppSetting } from "./storage.mjs";
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_MODEL = "deepseek-v4-pro";
+const DEFAULT_VISION_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_VISION_MODEL = "gpt-4.1-mini";
 
-function normalizeBaseUrl(value) {
-  const baseUrl = String(value || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
+function normalizeBaseUrl(value, fallback = DEFAULT_BASE_URL) {
+  const baseUrl = String(value || fallback).trim().replace(/\/+$/, "");
   let parsed;
   try {
     parsed = new URL(baseUrl);
   } catch {
     throw new Error("API 地址格式不正确");
   }
-  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("API 地址必须使用 HTTP 或 HTTPS");
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("API 地址必须使用 HTTP 或 HTTPS");
+  }
   return baseUrl;
+}
+
+function maskKey(apiKey) {
+  if (!apiKey) return "";
+  return `${apiKey.slice(0, Math.min(4, apiKey.length))}••••${apiKey.slice(-4)}`;
 }
 
 export async function getModelConfig() {
@@ -31,9 +40,7 @@ export async function getPublicModelConfig() {
     baseUrl: config.baseUrl,
     model: config.model,
     configured: Boolean(config.apiKey),
-    apiKeyMasked: config.apiKey
-      ? `${config.apiKey.slice(0, Math.min(4, config.apiKey.length))}••••${config.apiKey.slice(-4)}`
-      : ""
+    apiKeyMasked: maskKey(config.apiKey)
   };
 }
 
@@ -42,24 +49,15 @@ export async function updateModelConfig(input = {}) {
   const next = {
     baseUrl: normalizeBaseUrl(input.baseUrl || current.baseUrl),
     model: String(input.model || current.model || DEFAULT_MODEL).trim(),
-    apiKey: input.clearApiKey
-      ? ""
-      : String(input.apiKey || current.apiKey || "").trim()
+    apiKey: input.clearApiKey ? "" : String(input.apiKey || current.apiKey || "").trim()
   };
   if (!next.model) throw new Error("模型名称不能为空");
   await saveAppSetting("deepseek", next);
   return getPublicModelConfig();
 }
 
-export async function testModelConfig(input = {}) {
-  const current = await getModelConfig();
-  const config = {
-    baseUrl: normalizeBaseUrl(input.baseUrl || current.baseUrl),
-    model: String(input.model || current.model).trim(),
-    apiKey: String(input.apiKey || current.apiKey || "").trim()
-  };
+async function testOpenAiCompatibleConfig(config) {
   if (!config.apiKey) throw new Error("请先填写 API Key");
-
   const response = await fetch(`${config.baseUrl}/models`, {
     headers: { Authorization: `Bearer ${config.apiKey}` }
   });
@@ -74,4 +72,63 @@ export async function testModelConfig(input = {}) {
     modelAvailable: models.length ? models.includes(config.model) : null,
     models
   };
+}
+
+export async function testModelConfig(input = {}) {
+  const current = await getModelConfig();
+  return testOpenAiCompatibleConfig({
+    baseUrl: normalizeBaseUrl(input.baseUrl || current.baseUrl),
+    model: String(input.model || current.model).trim(),
+    apiKey: String(input.apiKey || current.apiKey || "").trim()
+  });
+}
+
+export async function getVisionConfig() {
+  const stored = (await getAppSetting("vision")) || {};
+  return {
+    baseUrl: normalizeBaseUrl(
+      stored.baseUrl || process.env.VISION_BASE_URL || DEFAULT_VISION_BASE_URL,
+      DEFAULT_VISION_BASE_URL
+    ),
+    model: String(stored.model || process.env.VISION_MODEL || DEFAULT_VISION_MODEL).trim(),
+    apiKey: String(stored.apiKey || process.env.VISION_API_KEY || "").trim()
+  };
+}
+
+export async function getPublicVisionConfig() {
+  const config = await getVisionConfig();
+  return {
+    provider: "OpenAI-compatible vision",
+    baseUrl: config.baseUrl,
+    model: config.model,
+    configured: Boolean(config.apiKey),
+    apiKeyMasked: maskKey(config.apiKey)
+  };
+}
+
+export async function updateVisionConfig(input = {}) {
+  const current = await getVisionConfig();
+  const next = {
+    baseUrl: normalizeBaseUrl(
+      input.baseUrl || current.baseUrl,
+      DEFAULT_VISION_BASE_URL
+    ),
+    model: String(input.model || current.model || DEFAULT_VISION_MODEL).trim(),
+    apiKey: input.clearApiKey ? "" : String(input.apiKey || current.apiKey || "").trim()
+  };
+  if (!next.model) throw new Error("视觉模型名称不能为空");
+  await saveAppSetting("vision", next);
+  return getPublicVisionConfig();
+}
+
+export async function testVisionConfig(input = {}) {
+  const current = await getVisionConfig();
+  return testOpenAiCompatibleConfig({
+    baseUrl: normalizeBaseUrl(
+      input.baseUrl || current.baseUrl,
+      DEFAULT_VISION_BASE_URL
+    ),
+    model: String(input.model || current.model).trim(),
+    apiKey: String(input.apiKey || current.apiKey || "").trim()
+  });
 }
