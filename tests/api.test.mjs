@@ -62,6 +62,23 @@ test("健康检查返回模型与演示模式状态", async () => {
   assert.equal(data.embedding.provider, "local-hash");
 });
 
+test("模型配置接口不会向前端返回明文密钥", async () => {
+  const response = await fetch(`${baseUrl}/api/settings/model`);
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.provider, "DeepSeek");
+  assert.equal(data.model, "deepseek-v4-pro");
+  assert.equal(data.configured, false);
+  assert.equal("apiKey" in data, false);
+
+  const testResponse = await fetch(`${baseUrl}/api/settings/model/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({})
+  });
+  assert.equal(testResponse.status, 400);
+});
+
 test("项目数据会写入 PostgreSQL 并可重新读取", async () => {
   const project = {
     id: ragProjectId,
@@ -219,4 +236,29 @@ test("可以从项目数据生成一页纸", async () => {
   assert.equal(data.title, "AI 产品方法");
   assert.equal(data.takeaways.length, 3);
   assert.equal(data.demo, true);
+});
+
+test("API Key 可持久化、脱敏显示并清除", async () => {
+  const saveResponse = await fetch(`${baseUrl}/api/settings/model`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-v4-pro",
+      apiKey: "sk-test-secret-12345678"
+    })
+  });
+  assert.equal(saveResponse.status, 200);
+  const saved = await saveResponse.json();
+  assert.equal(saved.configured, true);
+  assert.match(saved.apiKeyMasked, /^sk-t.*5678$/);
+  assert.equal(JSON.stringify(saved).includes("sk-test-secret-12345678"), false);
+
+  const clearResponse = await fetch(`${baseUrl}/api/settings/model`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clearApiKey: true })
+  });
+  assert.equal(clearResponse.status, 200);
+  assert.equal((await clearResponse.json()).configured, false);
 });

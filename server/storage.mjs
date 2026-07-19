@@ -108,6 +108,13 @@ async function createDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
   await db.query("CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id)");
   await db.query("CREATE INDEX IF NOT EXISTS idx_chunks_project ON document_chunks(project_id)");
   await db.query("CREATE INDEX IF NOT EXISTS idx_events_project ON learning_events(project_id)");
@@ -249,6 +256,23 @@ export async function recordEvent(projectId, eventType, payload) {
     "INSERT INTO learning_events(id, project_id, event_type, payload) VALUES ($1,$2,$3,$4::jsonb)",
     [randomUUID(), projectId, eventType, JSON.stringify(payload || {})]
   );
+}
+
+export async function getAppSetting(key) {
+  const db = await getDatabase();
+  const result = await db.query("SELECT value FROM app_settings WHERE key = $1", [key]);
+  return result.rows[0] ? safeJson(result.rows[0].value) : null;
+}
+
+export async function saveAppSetting(key, value) {
+  const db = await getDatabase();
+  await db.query(
+    `INSERT INTO app_settings(key, value, updated_at)
+     VALUES ($1, $2::jsonb, NOW())
+     ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [key, JSON.stringify(value || {})]
+  );
+  return value;
 }
 
 export async function hybridSearch(projectId, query, queryEmbedding, limit = 6) {

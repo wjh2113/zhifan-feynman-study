@@ -11,6 +11,12 @@ import { createReadStream } from "node:fs";
 import { chunkSources } from "./server/chunking.mjs";
 import { embedTexts, embeddingStatus } from "./server/embedding.mjs";
 import {
+  getModelConfig,
+  getPublicModelConfig,
+  testModelConfig,
+  updateModelConfig
+} from "./server/model-config.mjs";
+import {
   databaseStatus,
   deleteProject,
   getDatabase,
@@ -29,8 +35,6 @@ const upload = multer({
   limits: { fileSize: 30 * 1024 * 1024, files: 12 }
 });
 const port = Number(process.env.PORT || 8787);
-const model = process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
-const apiKey = process.env.DEEPSEEK_API_KEY;
 
 app.use(express.json({ limit: "2mb" }));
 
@@ -40,15 +44,16 @@ const cleanJson = (value) => {
 };
 
 async function deepseek(messages, temperature = 0.35) {
-  if (!apiKey) return null;
-  const response = await fetch("https://api.deepseek.com/chat/completions", {
+  const config = await getModelConfig();
+  if (!config.apiKey) return null;
+  const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${config.apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model,
+      model: config.model,
       messages,
       temperature,
       response_format: { type: "json_object" }
@@ -274,15 +279,40 @@ function normalizeQuestions(questions, analysis) {
 
 app.get("/api/health", async (_req, res) => {
   try {
+    const modelConfig = await getPublicModelConfig();
     res.json({
       ok: true,
-      model,
-      configured: Boolean(apiKey),
+      model: modelConfig.model,
+      configured: modelConfig.configured,
       database: await databaseStatus(),
       embedding: embeddingStatus()
     });
   } catch (error) {
     res.status(503).json({ ok: false, error: error.message });
+  }
+});
+
+app.get("/api/settings/model", async (_req, res) => {
+  try {
+    res.json(await getPublicModelConfig());
+  } catch (error) {
+    res.status(500).json({ error: error.message || "读取模型配置失败" });
+  }
+});
+
+app.put("/api/settings/model", async (req, res) => {
+  try {
+    res.json(await updateModelConfig(req.body || {}));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "保存模型配置失败" });
+  }
+});
+
+app.post("/api/settings/model/test", async (req, res) => {
+  try {
+    res.json(await testModelConfig(req.body || {}));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "模型连接测试失败" });
   }
 });
 
@@ -367,8 +397,10 @@ app.post("/api/analyze", upload.array("files", 12), async (req, res) => {
     }
 
     const demo = demoAnalysis(title, mode, sources);
+    const modelConfig = await getModelConfig();
+    const modelConfigured = Boolean(modelConfig.apiKey);
     let result = {};
-    if (apiKey) {
+    if (modelConfigured) {
       const corpus = corpusFrom(sources);
       result = await deepseek([
         {
@@ -411,7 +443,7 @@ ${corpus}`
         embedding: embeddingStatus(),
         strategy: "pgvector + PostgreSQL full-text RRF"
       },
-      demo: !apiKey
+      demo: !modelConfigured
     };
     const analysis = {
       ...mergedAnalysis,
@@ -450,7 +482,8 @@ app.post("/api/coach", async (req, res) => {
       const [queryEmbedding] = await embedTexts([retrievalQuery]);
       evidence = await hybridSearch(projectId, retrievalQuery, queryEmbedding, 4);
     }
-    if (!apiKey) {
+    const modelConfigured = Boolean((await getModelConfig()).apiKey);
+    if (!modelConfigured) {
       const hasExample = /比如|例如|就像|好比/.test(answer);
       const usesJargon = /(赋能|抓手|闭环|范式|飞轮|方法论)/.test(answer) && answer.length < 90;
       const payload = {
@@ -517,7 +550,8 @@ app.post("/api/coach", async (req, res) => {
 app.post("/api/one-pager", async (req, res) => {
   try {
     const { project } = req.body || {};
-    if (!apiKey) {
+    const modelConfigured = Boolean((await getModelConfig()).apiKey);
+    if (!modelConfigured) {
       const payload = {
         title: project?.title || "学习一页纸",
         thesis: project?.analysis?.summary || "先掌握骨架，再通过输出和追问把知识变成能力。",
@@ -560,12 +594,13 @@ app.post("/api/rag", async (req, res) => {
       return res.json({
         answer: "当前项目还没有可检索的资料。请先上传并解析资料。",
         sources: [],
-        demo: !apiKey
+        demo: !(await getModelConfig()).apiKey
       });
     }
 
     let answer;
-    if (apiKey) {
+    const modelConfigured = Boolean((await getModelConfig()).apiKey);
+    if (modelConfigured) {
       const result = await deepseek([
         {
           role: "system",
@@ -596,7 +631,7 @@ ${sources.map((source, index) => `[${index + 1}] ${source.filename} 第${source.
         score
       })),
       retrieval: "hybrid",
-      demo: !apiKey
+      demo: !modelConfigured
     });
   } catch (error) {
     res.status(500).json({ error: error.message || "资料检索失败" });
@@ -630,6 +665,8 @@ app.use((req, res, next) => {
 await getDatabase();
 app.listen(port, "0.0.0.0", () => {
   console.log(`Feynman Study API listening on http://127.0.0.1:${port}`);
-  console.log(apiKey ? `DeepSeek ready: ${model}` : "Demo mode: DEEPSEEK_API_KEY is not configured");
+  getPublicModelConfig().then((config) =>
+    console.log(config.configured ? `DeepSeek ready: ${config.model}` : "Demo mode: DeepSeek API Key is not configured")
+  );
   databaseStatus().then((status) => console.log(`Persistence ready: ${status.mode} + pgvector`));
 });

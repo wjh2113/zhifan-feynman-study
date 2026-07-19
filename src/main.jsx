@@ -353,7 +353,7 @@ function App() {
 
         <div className="sidebar-foot">
           <div className="model-chip"><Sparkles size={14} /> DeepSeek V4 Pro</div>
-          <button><Settings size={17} /> 设置</button>
+          <button className={activeView === "settings" ? "active" : ""} onClick={() => changeView("settings")}><Settings size={17} /> 模型设置</button>
           <div className="profile">
             <div className="avatar">W</div>
             <div><strong>我的学习空间</strong><span>仅自己可见</span></div>
@@ -383,6 +383,7 @@ function App() {
           {activeView === "coach" && <Coach project={project} updateProject={updateProject} showToast={showToast} navigate={changeView} />}
           {activeView === "blindspots" && <Blindspots project={project} updateProject={updateProject} showToast={showToast} navigate={changeView} />}
           {activeView === "output" && <OutputStudio project={project} updateProject={updateProject} showToast={showToast} />}
+          {activeView === "settings" && <ModelSettingsPage showToast={showToast} />}
         </div>
       </main>
 
@@ -1120,6 +1121,174 @@ function OutputStudio({ project, updateProject, showToast }) {
           </aside>
         </div>
       )}
+    </>
+  );
+}
+
+function ModelSettingsPage({ showToast }) {
+  const [form, setForm] = useState({
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-v4-pro",
+    apiKey: ""
+  });
+  const [saved, setSaved] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/settings/model")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "读取配置失败");
+        setSaved(data);
+        setForm((current) => ({ ...current, baseUrl: data.baseUrl, model: data.model }));
+      })
+      .catch((error) => showToast(error.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const testConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const response = await fetch("/api/settings/model/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "连接测试失败");
+      setTestResult({
+        ok: true,
+        message: data.modelAvailable === false
+          ? `连接成功，但账号返回的模型列表中没有 ${form.model}`
+          : `连接成功，${form.model} 可以使用`
+      });
+    } catch (error) {
+      setTestResult({ ok: false, message: error.message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const response = await fetch("/api/settings/model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "保存失败");
+      setSaved(data);
+      setForm((current) => ({ ...current, apiKey: "" }));
+      showToast("模型配置已保存，无需重启即可生效");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearKey = async () => {
+    setSaving(true);
+    try {
+      const response = await fetch("/api/settings/model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, apiKey: "", clearApiKey: true })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "清除失败");
+      setSaved(data);
+      setTestResult(null);
+      showToast("已清除保存的 API Key");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeading
+        eyebrow="应用设置 · 模型服务"
+        title="模型设置"
+        description="配置后，资料解读、AI出题、费曼追问和学习成果将使用你的 DeepSeek 模型。"
+      />
+      <div className="settings-layout">
+        <section className="panel settings-form">
+          <div className="settings-head">
+            <div className="settings-provider"><Sparkles size={20} /><div><strong>DeepSeek</strong><span>OpenAI 兼容接口</span></div></div>
+            <span className={`config-status ${saved?.configured ? "ready" : ""}`}>
+              {saved?.configured ? <><Check size={13} /> 已配置</> : <><CircleAlert size={13} /> 未配置</>}
+            </span>
+          </div>
+
+          {loading ? <div className="settings-loading"><Spinner /> 正在读取本地配置…</div> : (
+            <div className="settings-fields">
+              <label>
+                <span>API 地址</span>
+                <input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} placeholder="https://api.deepseek.com" />
+                <small>DeepSeek官方地址通常不需要修改。</small>
+              </label>
+              <label>
+                <span>模型名称</span>
+                <select value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })}>
+                  <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+                  <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+                </select>
+                <small>资料分析和出题推荐使用 Pro。</small>
+              </label>
+              <label>
+                <span>API Key</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={form.apiKey}
+                  onChange={(event) => setForm({ ...form, apiKey: event.target.value })}
+                  placeholder={saved?.configured ? `已保存：${saved.apiKeyMasked}` : "输入 DeepSeek API Key"}
+                />
+                <small>{saved?.configured ? "留空会继续使用已保存的密钥。" : "密钥只发送到本机后端，不写入浏览器存储。"}</small>
+              </label>
+            </div>
+          )}
+
+          {testResult && (
+            <div className={`connection-result ${testResult.ok ? "success" : "error"}`}>
+              {testResult.ok ? <Check size={16} /> : <CircleAlert size={16} />}
+              <span>{testResult.message}</span>
+            </div>
+          )}
+
+          <div className="settings-actions">
+            {saved?.configured && <button className="text-btn danger-text" onClick={clearKey} disabled={saving}>清除密钥</button>}
+            <button className="secondary-btn" onClick={testConnection} disabled={testing || loading}>
+              {testing ? <Spinner /> : <Zap size={16} />} 测试连接
+            </button>
+            <button className="primary-btn" onClick={save} disabled={saving || loading || (!form.apiKey && !saved?.configured)}>
+              {saving ? <Spinner /> : <Check size={16} />} 保存并启用
+            </button>
+          </div>
+        </section>
+
+        <aside className="settings-aside">
+          <div className="concept-note">
+            <span className="section-kicker">配置后会发生什么</span>
+            <h3>问题真正来自你的资料</h3>
+            <p>上传资料后，DeepSeek会提炼概念并生成5–8个费曼问题，每道题都关联原始文件、页码和出题依据。</p>
+          </div>
+          <div className="concept-note">
+            <span className="section-kicker">隐私说明</span>
+            <h3>密钥不会返回前端</h3>
+            <p>页面只读取脱敏状态。API Key保存在本机数据库中，仅在本地后端调用模型时使用。</p>
+          </div>
+        </aside>
+      </div>
     </>
   );
 }

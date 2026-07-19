@@ -303,6 +303,30 @@ kbd { border: 1px solid #dedfd7; background: #f3f3ee; border-radius: 4px; paddin
 .complete-ring { width: 78px; height: 78px; margin: 18px auto 0; border: 7px solid #d8e8dd; border-top-color: var(--green); border-radius: 50%; display: grid; place-items: center; color: var(--green); font-family: var(--serif); font-size: 19px; transform: rotate(15deg); }
 .complete-ring small { font-size: 8px; }.complete-ring { text-align: center; }
 
+.settings-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; align-items: start; }
+.settings-form { padding: 24px; }
+.settings-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 19px; border-bottom: 1px solid var(--line); }
+.settings-provider { display: flex; align-items: center; gap: 11px; }
+.settings-provider > svg { width: 40px; height: 40px; padding: 10px; border-radius: 11px; color: var(--green); background: var(--green-soft); }
+.settings-provider strong, .settings-provider span { display: block; }
+.settings-provider strong { font-family: var(--serif); font-size: 14px; }
+.settings-provider span { margin-top: 3px; color: #93978f; font-size: 9px; }
+.config-status { display: inline-flex; align-items: center; gap: 5px; border-radius: 20px; padding: 6px 9px; color: #8a6b39; background: #faf1df; font-size: 9px; font-weight: 600; }
+.config-status.ready { color: var(--green); background: var(--green-soft); }
+.settings-fields { display: grid; gap: 18px; padding: 22px 0; }
+.settings-fields label > span, .settings-fields label > small { display: block; }
+.settings-fields label > span { margin-bottom: 7px; color: #474c46; font-size: 10px; font-weight: 600; }
+.settings-fields input, .settings-fields select { width: 100%; height: 42px; border: 1px solid #d9dcd4; border-radius: 8px; padding: 0 11px; background: white; color: var(--ink); font-size: 11px; outline: none; }
+.settings-fields input:focus, .settings-fields select:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(46,103,82,.08); }
+.settings-fields label > small { margin-top: 6px; color: #969a92; font-size: 8px; }
+.settings-loading { min-height: 240px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #8d9189; font-size: 10px; }
+.connection-result { display: flex; align-items: flex-start; gap: 8px; border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; font-size: 9px; line-height: 1.5; }
+.connection-result.success { color: #276c50; background: #edf7f0; }
+.connection-result.error { color: #a5483e; background: #fff0ed; }
+.settings-actions { display: flex; justify-content: flex-end; align-items: center; gap: 9px; padding-top: 17px; border-top: 1px solid var(--line); }
+.settings-actions .danger-text { margin-right: auto; color: #b24e43; }
+.settings-aside { display: grid; gap: 11px; }
+
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(22,31,27,.48); backdrop-filter: blur(5px); }
 .modal { width: min(590px, 100%); border-radius: 15px; background: #fbfbf8; box-shadow: 0 30px 80px rgba(20,31,25,.25); overflow: hidden; animation: modal-in .23s ease; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(12px) scale(.98); } }
@@ -366,6 +390,8 @@ kbd { border: 1px solid #dedfd7; background: #f3f3ee; border-radius: 4px; paddin
   .coach-layout { grid-template-columns: 1fr; }
   .coach-side { grid-template-columns: 1fr 1fr; }
   .one-pager-shell { grid-template-columns: 1fr; }
+  .settings-layout { grid-template-columns: 1fr; }
+  .settings-aside { grid-template-columns: 1fr 1fr; }
   .output-side { grid-template-columns: 1fr 1fr 1fr; }
 }
 
@@ -400,5 +426,9 @@ kbd { border: 1px solid #dedfd7; background: #f3f3ee; border-radius: 4px; paddin
   .one-pager { padding: 28px 22px; }
   .one-pager section { grid-template-columns: 35px 1fr; gap: 9px; }
   .output-side { grid-template-columns: 1fr; }
+  .settings-aside { grid-template-columns: 1fr; }
+  .settings-actions { align-items: stretch; flex-direction: column; }
+  .settings-actions .text-btn { margin-right: 0; }
+  .settings-actions .primary-btn, .settings-actions .secondary-btn { width: 100%; }
   .modal-body { padding: 22px 20px; }
 }

@@ -26,6 +26,10 @@ npm run dev
 
 ## 配置 DeepSeek
 
+推荐直接在网页左侧点击“模型设置”，填写 API 地址、模型名称和 API Key，先测试连接再保存。配置保存在本机 PostgreSQL，页面只读取脱敏状态，保存后无需重启。
+
+也可以继续使用环境变量：
+
 ```env
 DEEPSEEK_API_KEY=你的密钥
 DEEPSEEK_MODEL=deepseek-v4-pro
