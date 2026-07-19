@@ -175,6 +175,7 @@ const navItems = [
   { id: "overview", label: "学习概览", icon: House },
   { id: "sources", label: "学习资料", icon: FolderOpen },
   { id: "map", label: "知识地图", icon: BrainCircuit },
+  { id: "rag", label: "资料问答", icon: Search },
   { id: "coach", label: "费曼对练", icon: MessageCircleQuestion },
   { id: "blindspots", label: "盲区与复测", icon: Target },
   { id: "output", label: "学习成果", icon: BookMarked }
@@ -199,12 +200,60 @@ function App() {
   const [createOpen, setCreateOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toast, setToast] = useState("");
+  const [persistenceReady, setPersistenceReady] = useState(false);
 
   const project = projects.find((item) => item.id === activeProjectId) || projects[0];
 
   useEffect(() => {
     localStorage.setItem("zhifan-projects", JSON.stringify(projects));
   }, [projects]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrate = async () => {
+      try {
+        const response = await fetch("/api/projects");
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "无法读取持久化项目");
+        if (cancelled) return;
+        if (data.projects?.length) {
+          setProjects(data.projects);
+          setActiveProjectId((current) =>
+            data.projects.some((item) => item.id === current) ? current : data.projects[0].id
+          );
+        } else {
+          await Promise.all(
+            projects.map((item) =>
+              fetch(`/api/projects/${encodeURIComponent(item.id)}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(item)
+              })
+            )
+          );
+        }
+        if (!cancelled) setPersistenceReady(true);
+      } catch (error) {
+        if (!cancelled) showToast(`持久化连接失败：${error.message}`);
+      }
+    };
+    hydrate();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!persistenceReady) return undefined;
+    const timer = window.setTimeout(() => {
+      projects.forEach((item) => {
+        fetch(`/api/projects/${encodeURIComponent(item.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(item)
+        }).catch(() => showToast("项目暂时只保存在本机浏览器，数据库同步失败"));
+      });
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [projects, persistenceReady]);
 
   useEffect(() => {
     localStorage.setItem("zhifan-active-project", activeProjectId);
@@ -303,7 +352,7 @@ function App() {
             <span>学习项目</span><ChevronRight size={14} /><strong>{project.title}</strong>
           </div>
           <div className="topbar-actions">
-            <button className="search-pill"><Search size={16} /><span>搜索知识点</span><kbd>⌘ K</kbd></button>
+            <button className="search-pill" onClick={() => changeView("rag")}><Search size={16} /><span>询问资料库</span><kbd>RAG</kbd></button>
             <button className="icon-btn"><CircleAlert size={18} /></button>
           </div>
         </header>
@@ -312,6 +361,7 @@ function App() {
           {activeView === "overview" && <Overview project={project} navigate={changeView} />}
           {activeView === "sources" && <Sources project={project} updateProject={updateProject} navigate={changeView} showToast={showToast} />}
           {activeView === "map" && <KnowledgeMap project={project} navigate={changeView} />}
+          {activeView === "rag" && <RagAssistant project={project} navigate={changeView} showToast={showToast} />}
           {activeView === "coach" && <Coach project={project} updateProject={updateProject} showToast={showToast} navigate={changeView} />}
           {activeView === "blindspots" && <Blindspots project={project} updateProject={updateProject} showToast={showToast} navigate={changeView} />}
           {activeView === "output" && <OutputStudio project={project} updateProject={updateProject} showToast={showToast} />}
@@ -452,6 +502,7 @@ function Sources({ project, updateProject, navigate, showToast }) {
     try {
       const body = new FormData();
       files.forEach((file) => body.append("files", file));
+      body.append("projectId", project.id);
       body.append("title", project.title);
       body.append("mode", project.mode);
       const response = await fetch("/api/analyze", { method: "POST", body });
@@ -517,9 +568,11 @@ function Sources({ project, updateProject, navigate, showToast }) {
         {sources.map((source) => (
           <div className="file-row" key={source.id}>
             <FileTypeIcon name={source.name} />
-            <div className="file-copy"><strong>{source.name}</strong><span>{source.type} · {source.pages || 1} 页 {source.size ? `· ${source.size}` : ""}</span></div>
+            <div className="file-copy"><strong>{source.name}</strong><span>{source.type} · {source.pages || 1} 页 {source.chunks ? `· ${source.chunks} 个检索分块` : ""} {source.size ? `· ${typeof source.size === "number" ? formatSize(source.size) : source.size}` : ""}</span></div>
             <span className="ready-tag"><Check size={13} /> 已解析</span>
-            <button className="icon-btn"><MoreHorizontal size={18} /></button>
+            {source.downloadUrl ? (
+              <a className="icon-btn" href={source.downloadUrl} title="下载原始资料"><Download size={17} /></a>
+            ) : <button className="icon-btn"><MoreHorizontal size={18} /></button>}
           </div>
         ))}
         {!sources.length && <EmptyMini text="还没有已解析的资料。" />}
@@ -639,6 +692,95 @@ function MasteryDot({ level }) {
   return <i className={`mastery-dot level-${level}`}>{level >= 3 && <Check size={10} />}</i>;
 }
 
+function RagAssistant({ project, navigate, showToast }) {
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [history, setHistory] = useState([]);
+  const hasSources = Boolean(project.analysis?.sources?.length);
+
+  const ask = async () => {
+    if (!query.trim() || loading) return;
+    const question = query.trim();
+    setQuery("");
+    setLoading(true);
+    try {
+      const response = await fetch("/api/rag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, query: question })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "资料检索失败");
+      setHistory((items) => [{ question, ...data }, ...items]);
+    } catch (error) {
+      setQuery(question);
+      showToast(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeading
+        eyebrow="基于资料 · 混合检索"
+        title="资料问答"
+        description="先用 pgvector 与全文关键词检索找到原文，再让 DeepSeek 严格依据证据回答。"
+        action={<button className="secondary-btn" onClick={() => navigate("sources")}><UploadCloud size={16} /> 管理资料</button>}
+      />
+      <section className="panel rag-ask-panel">
+        <div className="rag-status">
+          <span><BrainCircuit size={16} /> PostgreSQL + pgvector</span>
+          <span><Search size={16} /> 向量与关键词混合检索</span>
+          <span><FileText size={16} /> 回答附原文引用</span>
+        </div>
+        <div className="rag-input-row">
+          <textarea
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") ask();
+            }}
+            placeholder={hasSources ? "针对已上传的资料提问，例如：讲师认为这个方法落地时最大的风险是什么？" : "请先上传资料并完成解析"}
+            disabled={!hasSources || loading}
+          />
+          <button className="primary-btn" onClick={ask} disabled={!hasSources || !query.trim() || loading}>
+            {loading ? <Spinner /> : <Search size={17} />} 检索并回答
+          </button>
+        </div>
+      </section>
+
+      <div className="rag-history">
+        {history.map((item, index) => (
+          <article className="panel rag-answer-card" key={`${item.question}-${index}`}>
+            <div className="rag-question"><span>问</span><h3>{item.question}</h3></div>
+            <div className="rag-answer"><Sparkles size={18} /><p>{item.answer}</p></div>
+            {item.sources?.length > 0 && (
+              <div className="rag-sources">
+                <span className="section-kicker">检索依据 · {item.sources.length} 个片段</span>
+                {item.sources.map((source, sourceIndex) => (
+                  <div className="rag-source" key={source.id}>
+                    <strong>[{sourceIndex + 1}] {source.filename} · 第 {source.page} 页</strong>
+                    <p>{source.quote}</p>
+                    {source.documentId && <a href={`/api/documents/${source.documentId}/file`}>打开原始资料</a>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+        ))}
+        {!history.length && (
+          <div className="empty-state">
+            <div><Search size={28} /></div>
+            <h3>{hasSources ? "从你的资料开始提问" : "资料库还是空的"}</h3>
+            <p>{hasSources ? "回答会显示命中的文件、页码和原文片段。" : "上传 PDF、DOCX、TXT 或 Markdown 后即可使用 RAG 问答。"}</p>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function Coach({ project, updateProject, showToast, navigate }) {
   const concepts = project.analysis?.modules?.flatMap((module) => module.concepts) || [];
   const stored = (() => {
@@ -680,7 +822,7 @@ function Coach({ project, updateProject, showToast, navigate }) {
       const response = await fetch("/api/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ concept, answer: userText, role, turn })
+        body: JSON.stringify({ projectId: project.id, concept, answer: userText, role, turn })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "教练无法回应");
